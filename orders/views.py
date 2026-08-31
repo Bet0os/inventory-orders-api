@@ -1,6 +1,8 @@
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
+from rest_framework.permissions import IsAuthenticated
+
 from django.db import transaction
 
 from .models import Order, OrderItem
@@ -10,26 +12,49 @@ from cart.models import Cart
 from products.models import InventoryMovement
 
 
+# ==================================================
+# ORDERS
+# ==================================================
+
 class OrderView(APIView):
 
+    permission_classes = [IsAuthenticated]
+
     # ==========================================
-    # GET - Consultar mis órdenes
-    # Filtros: status y date
+    # GET - CONSULTAR ÓRDENES
+    # Cliente: solamente sus órdenes
+    # Staff: todas las órdenes
+    #
+    # Filtros:
+    # ?status=PENDING
+    # ?date=2026-08-31
     # ==========================================
+
     def get(self, request):
 
-        if not request.user.is_authenticated:
-            return Response(
-                {
-                    'error': 'Debes iniciar sesión para consultar tus órdenes.'
-                },
-                status=status.HTTP_401_UNAUTHORIZED
+        # ==========================================
+        # STAFF PUEDE VER TODAS LAS ÓRDENES
+        # ==========================================
+
+        if request.user.is_staff:
+
+            orders = Order.objects.all()
+
+        # ==========================================
+        # CLIENTE SOLO PUEDE VER SUS ÓRDENES
+        # ==========================================
+
+        else:
+
+            orders = Order.objects.filter(
+                user=request.user
             )
 
-        # Obtener órdenes del usuario
-        orders = Order.objects.filter(
-            user=request.user
-        ).select_related(
+        # ==========================================
+        # OPTIMIZACIÓN DE CONSULTAS
+        # ==========================================
+
+        orders = orders.select_related(
             'user'
         ).prefetch_related(
             'items__product'
@@ -38,9 +63,13 @@ class OrderView(APIView):
         # ==========================================
         # FILTRO POR ESTADO
         # ==========================================
-        order_status = request.query_params.get('status')
+
+        order_status = request.query_params.get(
+            'status'
+        )
 
         if order_status:
+
             orders = orders.filter(
                 status=order_status.upper()
             )
@@ -48,12 +77,24 @@ class OrderView(APIView):
         # ==========================================
         # FILTRO POR FECHA
         # ==========================================
-        date = request.query_params.get('date')
+
+        date = request.query_params.get(
+            'date'
+        )
 
         if date:
+
             orders = orders.filter(
                 created_at__date=date
             )
+
+        # ==========================================
+        # ORDENAR
+        # ==========================================
+
+        orders = orders.order_by(
+            '-created_at'
+        )
 
         serializer = OrderSerializer(
             orders,
@@ -66,50 +107,67 @@ class OrderView(APIView):
         )
 
     # ==========================================
-    # POST - Crear una orden
+    # POST - CREAR UNA ORDEN DESDE EL CARRITO
     # ==========================================
 
     def post(self, request):
 
-        if not request.user.is_authenticated:
-            return Response(
-                {
-                    'error': 'Debes iniciar sesión para crear una orden.'
-                },
-                status=status.HTTP_401_UNAUTHORIZED
-            )
-
         # ==========================================
         # DATOS DE ENVÍO Y PAGO
         # ==========================================
-        shipping_address = request.data.get('shipping_address')
-        payment_method = request.data.get('payment_method')
+
+        shipping_address = request.data.get(
+            'shipping_address'
+        )
+
+        payment_method = request.data.get(
+            'payment_method'
+        )
+
+        # ==========================================
+        # VALIDAR DIRECCIÓN
+        # ==========================================
 
         if not shipping_address:
+
             return Response(
                 {
-                    'error': 'Debes proporcionar una dirección de envío.'
+                    'error': (
+                        'Debes proporcionar '
+                        'una dirección de envío.'
+                    )
                 },
                 status=status.HTTP_400_BAD_REQUEST
             )
+
+        # ==========================================
+        # VALIDAR MÉTODO DE PAGO
+        # ==========================================
 
         if not payment_method:
+
             return Response(
                 {
-                    'error': 'Debes proporcionar un método de pago.'
+                    'error': (
+                        'Debes proporcionar '
+                        'un método de pago.'
+                    )
                 },
                 status=status.HTTP_400_BAD_REQUEST
             )
 
         # ==========================================
-        # BUSCAR CARRITO
+        # BUSCAR CARRITO DEL USUARIO
         # ==========================================
+
         try:
+
             cart = Cart.objects.get(
                 user=request.user
             )
 
         except Cart.DoesNotExist:
+
             return Response(
                 {
                     'error': 'No tienes un carrito.'
@@ -120,7 +178,9 @@ class OrderView(APIView):
         # ==========================================
         # VERIFICAR CARRITO VACÍO
         # ==========================================
+
         if not cart.items.exists():
+
             return Response(
                 {
                     'error': 'El carrito está vacío.'
@@ -129,30 +189,42 @@ class OrderView(APIView):
             )
 
         # ==========================================
-        # VALIDAR STOCK DISPONIBLE
+        # OBTENER ITEMS
         # ==========================================
-        for cart_item in cart.items.select_related('product').all():
+
+        cart_items = cart.items.select_related(
+            'product'
+        ).all()
+
+        # ==========================================
+        # VALIDAR STOCK
+        # ==========================================
+
+        for cart_item in cart_items:
 
             if cart_item.quantity > cart_item.product.stock:
+
                 return Response(
                     {
                         'error': (
                             f'No hay suficiente stock de '
                             f'{cart_item.product.name}. '
-                            f'Disponible: {cart_item.product.stock}'
+                            f'Disponible: '
+                            f'{cart_item.product.stock}'
                         )
                     },
                     status=status.HTTP_400_BAD_REQUEST
                 )
 
         # ==========================================
-        # CREAR ORDEN Y DESCONTAR INVENTARIO
+        # CREAR ORDEN
         # ==========================================
+
         with transaction.atomic():
 
             total = sum(
                 item.subtotal
-                for item in cart.items.all()
+                for item in cart_items
             )
 
             order = Order.objects.create(
@@ -162,7 +234,11 @@ class OrderView(APIView):
                 payment_method=payment_method
             )
 
-            for cart_item in cart.items.all():
+            # ======================================
+            # CREAR ORDER ITEMS
+            # ======================================
+
+            for cart_item in cart_items:
 
                 order_item = OrderItem.objects.create(
                     order=order,
@@ -172,18 +248,27 @@ class OrderView(APIView):
                     subtotal=cart_item.subtotal
                 )
 
-                # Salida de inventario por venta
+                # ==================================
+                # SALIDA DE INVENTARIO POR VENTA
+                # ==================================
+
                 InventoryMovement.objects.create(
                     product=cart_item.product,
                     movement_type='OUT',
+                    reason='SALE',
                     quantity=cart_item.quantity,
                     order_item=order_item
                 )
 
-            # Vaciar carrito
+            # ======================================
+            # VACIAR CARRITO
+            # ======================================
+
             cart.items.all().delete()
 
-        serializer = OrderSerializer(order)
+        serializer = OrderSerializer(
+            order
+        )
 
         return Response(
             serializer.data,
@@ -197,26 +282,50 @@ class OrderView(APIView):
 
 class OrderDetailView(APIView):
 
-    # ==========================================
-    # GET - Consultar una orden específica
-    # ==========================================
-    def get(self, request, order_id):
+    permission_classes = [IsAuthenticated]
 
-        if not request.user.is_authenticated:
-            return Response(
-                {
-                    'error': 'Debes iniciar sesión para consultar la orden.'
-                },
-                status=status.HTTP_401_UNAUTHORIZED
-            )
+    # ==========================================
+    # OBTENER ORDEN SEGÚN PERMISOS
+    #
+    # Staff:
+    # puede acceder a cualquier orden
+    #
+    # Cliente:
+    # solamente puede acceder a sus órdenes
+    # ==========================================
+
+    def get_order(self, request, order_id):
 
         try:
-            order = Order.objects.get(
+
+            if request.user.is_staff:
+
+                return Order.objects.get(
+                    id=order_id
+                )
+
+            return Order.objects.get(
                 id=order_id,
                 user=request.user
             )
 
         except Order.DoesNotExist:
+
+            return None
+
+    # ==========================================
+    # GET - CONSULTAR ORDEN ESPECÍFICA
+    # ==========================================
+
+    def get(self, request, order_id):
+
+        order = self.get_order(
+            request,
+            order_id
+        )
+
+        if not order:
+
             return Response(
                 {
                     'error': 'Orden no encontrada.'
@@ -224,7 +333,9 @@ class OrderDetailView(APIView):
                 status=status.HTTP_404_NOT_FOUND
             )
 
-        serializer = OrderSerializer(order)
+        serializer = OrderSerializer(
+            order
+        )
 
         return Response(
             serializer.data,
@@ -232,26 +343,25 @@ class OrderDetailView(APIView):
         )
 
     # ==========================================
-    # PATCH - Cambiar estado de una orden
+    # PATCH - CAMBIAR ESTADO
+    #
+    # Cliente:
+    # PENDING -> CANCELLED
+    #
+    # Staff:
+    # PENDING -> COMPLETED
+    # PENDING -> CANCELLED
     # ==========================================
 
     def patch(self, request, order_id):
 
-        if not request.user.is_authenticated:
-            return Response(
-                {
-                    'error': 'Debes iniciar sesión para actualizar la orden.'
-                },
-                status=status.HTTP_401_UNAUTHORIZED
-            )
+        order = self.get_order(
+            request,
+            order_id
+        )
 
-        try:
-            order = Order.objects.get(
-                id=order_id,
-                user=request.user
-            )
+        if not order:
 
-        except Order.DoesNotExist:
             return Response(
                 {
                     'error': 'Orden no encontrada.'
@@ -259,59 +369,125 @@ class OrderDetailView(APIView):
                 status=status.HTTP_404_NOT_FOUND
             )
 
-        new_status = request.data.get('status')
+        # ==========================================
+        # OBTENER NUEVO ESTADO
+        # ==========================================
+
+        new_status = request.data.get(
+            'status'
+        )
 
         if not new_status:
+
             return Response(
                 {
-                    'error': 'Debes proporcionar un status.'
+                    'error': (
+                        'Debes proporcionar un status.'
+                    )
                 },
                 status=status.HTTP_400_BAD_REQUEST
             )
 
         new_status = new_status.upper()
 
-        # ==========================================
-        # TRANSICIONES PERMITIDAS
-        # ==========================================
-        allowed_transitions = {
-            'PENDING': [
-                'COMPLETED',
-                'CANCELLED'
-            ],
-            'COMPLETED': [],
-            'CANCELLED': [],
-            'RETURNED': []
-        }
-
         current_status = order.status
 
-        if current_status not in allowed_transitions:
+        # ==========================================
+        # VALIDAR STATUS EXISTENTE
+        # ==========================================
+
+        valid_statuses = [
+            'PENDING',
+            'COMPLETED',
+            'CANCELLED',
+            'RETURNED'
+        ]
+
+        if new_status not in valid_statuses:
+
             return Response(
                 {
-                    'error': 'El estado actual de la orden no es válido.'
+                    'error': 'El status proporcionado no es válido.'
                 },
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        if new_status not in allowed_transitions[current_status]:
+        # ==========================================
+        # NO MODIFICAR ÓRDENES FINALIZADAS
+        # ==========================================
+
+        if current_status in [
+            'COMPLETED',
+            'CANCELLED',
+            'RETURNED'
+        ]:
+
             return Response(
                 {
                     'error': (
                         f'No se puede cambiar una orden '
-                        f'de {current_status} a {new_status}.'
+                        f'que está en estado '
+                        f'{current_status}.'
                     )
                 },
                 status=status.HTTP_400_BAD_REQUEST
             )
 
         # ==========================================
-        # CAMBIAR ESTADO Y MANEJAR INVENTARIO
+        # CLIENTE
+        # SOLO PUEDE CANCELAR UNA ORDEN PENDING
         # ==========================================
+
+        if not request.user.is_staff:
+
+            if new_status != 'CANCELLED':
+
+                return Response(
+                    {
+                        'error': (
+                            'Los clientes solamente '
+                            'pueden cancelar órdenes '
+                            'pendientes.'
+                        )
+                    },
+                    status=status.HTTP_403_FORBIDDEN
+                )
+
+        # ==========================================
+        # STAFF
+        # PUEDE COMPLETAR O CANCELAR
+        # ==========================================
+
+        else:
+
+            allowed_staff_statuses = [
+                'COMPLETED',
+                'CANCELLED'
+            ]
+
+            if new_status not in allowed_staff_statuses:
+
+                return Response(
+                    {
+                        'error': (
+                            'El administrador solamente '
+                            'puede marcar la orden como '
+                            'COMPLETED o CANCELLED.'
+                        )
+                    },
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+        # ==========================================
+        # ACTUALIZAR ESTADO
+        # ==========================================
+
         with transaction.atomic():
 
-            # Si una orden pendiente se cancela,
-            # regresar productos al inventario
+            # ======================================
+            # SI SE CANCELA, RESTAURAR STOCK
+            # ======================================
+
             if (
                 current_status == 'PENDING'
                 and new_status == 'CANCELLED'
@@ -322,6 +498,7 @@ class OrderDetailView(APIView):
                     InventoryMovement.objects.create(
                         product=order_item.product,
                         movement_type='IN',
+                        reason='ADJUSTMENT',
                         quantity=order_item.quantity,
                         order_item=order_item
                     )
@@ -329,7 +506,9 @@ class OrderDetailView(APIView):
             order.status = new_status
             order.save()
 
-        serializer = OrderSerializer(order)
+        serializer = OrderSerializer(
+            order
+        )
 
         return Response(
             serializer.data,
@@ -343,26 +522,44 @@ class OrderDetailView(APIView):
 
 class OrderReturnView(APIView):
 
-    # ==========================================
-    # POST - Devolver una orden
-    # ==========================================
-    def post(self, request, order_id):
+    permission_classes = [IsAuthenticated]
 
-        if not request.user.is_authenticated:
-            return Response(
-                {
-                    'error': 'Debes iniciar sesión para devolver una orden.'
-                },
-                status=status.HTTP_401_UNAUTHORIZED
-            )
+    # ==========================================
+    # OBTENER ORDEN SEGÚN PERMISOS
+    # ==========================================
+
+    def get_order(self, request, order_id):
 
         try:
-            order = Order.objects.get(
+
+            if request.user.is_staff:
+
+                return Order.objects.get(
+                    id=order_id
+                )
+
+            return Order.objects.get(
                 id=order_id,
                 user=request.user
             )
 
         except Order.DoesNotExist:
+
+            return None
+
+    # ==========================================
+    # POST - DEVOLVER UNA ORDEN
+    # ==========================================
+
+    def post(self, request, order_id):
+
+        order = self.get_order(
+            request,
+            order_id
+        )
+
+        if not order:
+
             return Response(
                 {
                     'error': 'Orden no encontrada.'
@@ -371,20 +568,32 @@ class OrderReturnView(APIView):
             )
 
         # ==========================================
-        # VERIFICAR ESTADO
+        # YA FUE DEVUELTA
         # ==========================================
+
         if order.status == 'RETURNED':
+
             return Response(
                 {
-                    'error': 'La orden ya fue devuelta.'
+                    'error': (
+                        'La orden ya fue devuelta.'
+                    )
                 },
                 status=status.HTTP_400_BAD_REQUEST
             )
 
+        # ==========================================
+        # SOLO COMPLETED PUEDE DEVOLVERSE
+        # ==========================================
+
         if order.status != 'COMPLETED':
+
             return Response(
                 {
-                    'error': 'Solo se pueden devolver órdenes completadas.'
+                    'error': (
+                        'Solo se pueden devolver '
+                        'órdenes completadas.'
+                    )
                 },
                 status=status.HTTP_400_BAD_REQUEST
             )
@@ -392,6 +601,7 @@ class OrderReturnView(APIView):
         # ==========================================
         # DEVOLVER PRODUCTOS AL INVENTARIO
         # ==========================================
+
         with transaction.atomic():
 
             for order_item in order.items.all():
@@ -399,6 +609,7 @@ class OrderReturnView(APIView):
                 InventoryMovement.objects.create(
                     product=order_item.product,
                     movement_type='IN',
+                    reason='ADJUSTMENT',
                     quantity=order_item.quantity,
                     order_item=order_item
                 )
@@ -406,7 +617,9 @@ class OrderReturnView(APIView):
             order.status = 'RETURNED'
             order.save()
 
-        serializer = OrderSerializer(order)
+        serializer = OrderSerializer(
+            order
+        )
 
         return Response(
             serializer.data,

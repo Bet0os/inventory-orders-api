@@ -1,34 +1,26 @@
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
+from rest_framework.permissions import IsAuthenticated
 
 from .models import Cart, CartItem
 from .serializers import CartSerializer
 from products.models import Product
 
 
+# ==================================================
+# CART
+# ==================================================
+
 class CartView(APIView):
+
+    permission_classes = [IsAuthenticated]
 
     def get_cart(self, request):
 
-        # Usuario autenticado
-        if request.user.is_authenticated:
-
-            cart, created = Cart.objects.get_or_create(
-                user=request.user
-            )
-
-        # Usuario invitado
-        else:
-
-            if not request.session.session_key:
-                request.session.create()
-
-            session_key = request.session.session_key
-
-            cart, created = Cart.objects.get_or_create(
-                session_key=session_key
-            )
+        cart, created = Cart.objects.get_or_create(
+            user=request.user
+        )
 
         return cart
 
@@ -58,42 +50,76 @@ class CartView(APIView):
         product_id = request.data.get('product')
         quantity = request.data.get('quantity', 1)
 
-        # Verificar que se haya enviado el producto
+        # ==========================================
+        # VALIDAR PRODUCTO
+        # ==========================================
+
         if not product_id:
+
             return Response(
-                {'error': 'Debes proporcionar el producto.'},
+                {
+                    'error': 'Debes proporcionar el producto.'
+                },
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # Buscar producto
+        # ==========================================
+        # BUSCAR PRODUCTO
+        # ==========================================
+
         try:
-            product = Product.objects.get(id=product_id)
+
+            product = Product.objects.get(
+                id=product_id
+            )
 
         except Product.DoesNotExist:
+
             return Response(
-                {'error': 'El producto no existe.'},
+                {
+                    'error': 'El producto no existe.'
+                },
                 status=status.HTTP_404_NOT_FOUND
             )
 
-        # Convertir cantidad a entero
+        # ==========================================
+        # VALIDAR CANTIDAD
+        # ==========================================
+
         try:
+
             quantity = int(quantity)
 
         except (TypeError, ValueError):
+
             return Response(
-                {'error': 'La cantidad debe ser un número entero.'},
+                {
+                    'error': (
+                        'La cantidad debe ser '
+                        'un número entero.'
+                    )
+                },
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # Verificar cantidad
         if quantity <= 0:
+
             return Response(
-                {'error': 'La cantidad debe ser mayor que 0.'},
+                {
+                    'error': (
+                        'La cantidad debe ser '
+                        'mayor que 0.'
+                    )
+                },
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # Verificar stock
+        # ==========================================
+        # VALIDAR STOCK
+        # ==========================================
+
         if quantity > product.stock:
+
             return Response(
                 {
                     'error': 'No hay suficiente stock.',
@@ -102,25 +128,40 @@ class CartView(APIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # Buscar si ya existe el producto en el carrito
+        # ==========================================
+        # AGREGAR PRODUCTO AL CARRITO
+        # ==========================================
+
         cart_item, created = CartItem.objects.get_or_create(
             cart=cart,
             product=product,
-            defaults={'quantity': quantity}
+            defaults={
+                'quantity': quantity
+            }
         )
 
-        # Si ya existe, aumentar cantidad
+        # ==========================================
+        # SI YA EXISTÍA, AUMENTAR CANTIDAD
+        # ==========================================
+
         if not created:
 
-            nueva_cantidad = cart_item.quantity + quantity
+            nueva_cantidad = (
+                cart_item.quantity + quantity
+            )
 
-            # Verificar stock considerando lo que ya había
             if nueva_cantidad > product.stock:
+
                 return Response(
                     {
-                        'error': 'No hay suficiente stock para agregar esa cantidad.',
+                        'error': (
+                            'No hay suficiente stock '
+                            'para agregar esa cantidad.'
+                        ),
                         'stock_disponible': product.stock,
-                        'cantidad_en_carrito': cart_item.quantity
+                        'cantidad_en_carrito': (
+                            cart_item.quantity
+                        )
                     },
                     status=status.HTTP_400_BAD_REQUEST
                 )
@@ -136,32 +177,19 @@ class CartView(APIView):
         )
 
 
-# ==========================================
+# ==================================================
 # CART ITEM
-# ==========================================
+# ==================================================
 
 class CartItemView(APIView):
 
+    permission_classes = [IsAuthenticated]
+
     def get_cart(self, request):
 
-        # Usuario autenticado
-        if request.user.is_authenticated:
-
-            cart, created = Cart.objects.get_or_create(
-                user=request.user
-            )
-
-        # Usuario invitado
-        else:
-
-            if not request.session.session_key:
-                request.session.create()
-
-            session_key = request.session.session_key
-
-            cart, created = Cart.objects.get_or_create(
-                session_key=session_key
-            )
+        cart, created = Cart.objects.get_or_create(
+            user=request.user
+        )
 
         return cart
 
@@ -173,60 +201,98 @@ class CartItemView(APIView):
 
         cart = self.get_cart(request)
 
-        # Buscar el item SOLO dentro del carrito actual
+        # ==========================================
+        # BUSCAR ITEM DEL CARRITO ACTUAL
+        # ==========================================
+
         try:
+
             cart_item = CartItem.objects.get(
                 id=item_id,
                 cart=cart
             )
 
         except CartItem.DoesNotExist:
+
             return Response(
-                {'error': 'El producto no está en tu carrito.'},
+                {
+                    'error': (
+                        'El producto no está '
+                        'en tu carrito.'
+                    )
+                },
                 status=status.HTTP_404_NOT_FOUND
             )
 
         quantity = request.data.get('quantity')
 
-        # Verificar que se haya enviado quantity
+        # ==========================================
+        # VALIDAR CANTIDAD
+        # ==========================================
+
         if quantity is None:
-            return Response(
-                {'error': 'Debes proporcionar la cantidad.'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
 
-        # Convertir a entero
-        try:
-            quantity = int(quantity)
-
-        except (TypeError, ValueError):
-            return Response(
-                {'error': 'La cantidad debe ser un número entero.'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-        # Verificar cantidad
-        if quantity <= 0:
-            return Response(
-                {'error': 'La cantidad debe ser mayor que 0.'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-        # Verificar stock
-        if quantity > cart_item.product.stock:
             return Response(
                 {
-                    'error': 'No hay suficiente stock.',
-                    'stock_disponible': cart_item.product.stock
+                    'error': (
+                        'Debes proporcionar '
+                        'la cantidad.'
+                    )
                 },
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # Actualizar cantidad
+        try:
+
+            quantity = int(quantity)
+
+        except (TypeError, ValueError):
+
+            return Response(
+                {
+                    'error': (
+                        'La cantidad debe ser '
+                        'un número entero.'
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if quantity <= 0:
+
+            return Response(
+                {
+                    'error': (
+                        'La cantidad debe ser '
+                        'mayor que 0.'
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # ==========================================
+        # VALIDAR STOCK
+        # ==========================================
+
+        if quantity > cart_item.product.stock:
+
+            return Response(
+                {
+                    'error': 'No hay suficiente stock.',
+                    'stock_disponible': (
+                        cart_item.product.stock
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # ==========================================
+        # ACTUALIZAR CANTIDAD
+        # ==========================================
+
         cart_item.quantity = quantity
         cart_item.save()
 
-        # Devolver carrito actualizado
         serializer = CartSerializer(cart)
 
         return Response(
@@ -242,23 +308,35 @@ class CartItemView(APIView):
 
         cart = self.get_cart(request)
 
-        # Buscar el item SOLO dentro del carrito actual
+        # ==========================================
+        # BUSCAR ITEM DEL CARRITO ACTUAL
+        # ==========================================
+
         try:
+
             cart_item = CartItem.objects.get(
                 id=item_id,
                 cart=cart
             )
 
         except CartItem.DoesNotExist:
+
             return Response(
-                {'error': 'El producto no está en tu carrito.'},
+                {
+                    'error': (
+                        'El producto no está '
+                        'en tu carrito.'
+                    )
+                },
                 status=status.HTTP_404_NOT_FOUND
             )
 
-        # Eliminar producto
+        # ==========================================
+        # ELIMINAR ITEM
+        # ==========================================
+
         cart_item.delete()
 
-        # Devolver carrito actualizado
         serializer = CartSerializer(cart)
 
         return Response(

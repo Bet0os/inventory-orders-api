@@ -154,6 +154,7 @@ class CategoryViewSet(viewsets.ModelViewSet):
     queryset = Category.objects.all().order_by('id')
     serializer_class = CategorySerializer
     pagination_class = CategoryPagination
+    permission_classes = [IsAdminOrReadOnly]
 
 
 # ==================================================
@@ -164,6 +165,7 @@ class SupplierViewSet(viewsets.ModelViewSet):
 
     queryset = Supplier.objects.all()
     serializer_class = SupplierSerializer
+    permission_classes = [IsAdminOrReadOnly]
 
 
 # ==================================================
@@ -174,6 +176,7 @@ class InventoryMovementViewSet(viewsets.ModelViewSet):
 
     queryset = InventoryMovement.objects.all()
     serializer_class = InventoryMovementSerializer
+    permission_classes = [IsAdminOrReadOnly]
 
 
 # ==================================================
