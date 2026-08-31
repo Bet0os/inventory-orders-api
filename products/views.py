@@ -3,6 +3,7 @@ from rest_framework.decorators import action
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.pagination import PageNumberPagination
+from rest_framework.permissions import IsAdminUser
 
 from django.db.models import (
     Q,
@@ -170,13 +171,14 @@ class SupplierViewSet(viewsets.ModelViewSet):
 
 # ==================================================
 # INVENTORY MOVEMENTS
+# SOLO STAFF
 # ==================================================
 
 class InventoryMovementViewSet(viewsets.ModelViewSet):
 
     queryset = InventoryMovement.objects.all()
     serializer_class = InventoryMovementSerializer
-    permission_classes = [IsAdminOrReadOnly]
+    permission_classes = [IsAdminUser]
 
 
 # ==================================================
@@ -189,23 +191,11 @@ class StockSummaryView(APIView):
 
         products = Product.objects.all()
 
-        # ==========================================
-        # TOTAL DE PRODUCTOS
-        # ==========================================
-
         total_products = products.count()
-
-        # ==========================================
-        # TOTAL DE STOCK
-        # ==========================================
 
         total_stock = products.aggregate(
             total_stock=Sum('stock')
         )['total_stock'] or 0
-
-        # ==========================================
-        # VALOR TOTAL DEL INVENTARIO
-        # ==========================================
 
         inventory_value = products.aggregate(
             inventory_value=Sum(
